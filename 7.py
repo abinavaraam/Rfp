@@ -1,77 +1,53 @@
-from transformers import pipeline
-import fitz  # PyMuPDF for PDFs
-from docx import Document
-import pandas as pd
+import zipfile
+import lxml.etree as ET
+import re
 
-# Load a different NLP model for text classification
-model_name = "allenai/longformer-large-4096-finetuned"
-classifier = pipeline("zero-shot-classification", model=model_name)
+def extract_text_from_docx(docx_path):
+    """Extracts structured text (headers and contents) from a DOCX file using lxml"""
+        
+            with zipfile.ZipFile(docx_path, 'r') as docx:
+                    xml_content = docx.read('word/document.xml')
+                        
+                            tree = ET.fromstring(xml_content)
+                                namespace = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                                    
+                                        extracted_data = []
+                                            current_header = None
+                                                current_content = []
 
-# Function to classify text as Header or Content
-def classify_text(text):
-    labels = ["Header", "Content"]
-        classification = classifier(text, candidate_labels=labels)
-            return classification["labels"][0]  # Returns "Header" or "Content"
+                                                    for para in tree.findall('.//w:p', namespace):
+                                                            text = ''.join(node.text or '' for node in para.findall('.//w:t', namespace)).strip()
+                                                                    if not text:
+                                                                                continue  # Skip empty lines
 
-            # Function to extract headers & values
-            def extract_headers_with_model(text):
-                lines = text.split("\n")
-                    sections = []
-                        current_section = None
+                                                                                        # Check for bold formatting
+                                                                                                is_bold = any(node.find('.//w:b', namespace) is not None for node in para.findall('.//w:r', namespace))
 
-                            for line in lines:
-                                    line = line.strip()
-                                            if not line:
-                                                        continue
+                                                                                                        # Check if paragraph starts with a valid numbered format (e.g., 1., 1), 1.1), 3.1, 3.1.1)
+                                                                                                                is_numbered = bool(re.match(r'^\d+(\.\d+)*\)?\s+', text))  # Matches "1.", "1)", "1.1)", "3.1"
+                                                                                                                        is_bullet = bool(re.match(r'^[-*•]\s+', text))  # Matches bullets like "- ", "* ", "• "
 
-                                                                label = classify_text(line)
+                                                                                                                                # If this paragraph is a header
+                                                                                                                                        if is_numbered or (is_bold and len(text) < 80):
+                                                                                                                                                    if current_header:
+                                                                                                                                                                    extracted_data.append((current_header, "\n".join(current_content)))  # Save previous section
+                                                                                                                                                                                
+                                                                                                                                                                                            current_header = text  # Store new header
+                                                                                                                                                                                                        current_content = []  # Reset content storage
+                                                                                                                                                                                                                else:
+                                                                                                                                                                                                                            current_content.append(text)  # Append text under the last detected header
 
-                                                                        if label == "Header":
-                                                                                    if current_section:
-                                                                                                    sections.append(current_section)
-                                                                                                                current_section = {"Header": line, "Content": ""}
-                                                                                                                        elif current_section:
-                                                                                                                                    current_section["Content"] += line + " "
+                                                                                                                                                                                                                                # Save the last detected section
+                                                                                                                                                                                                                                    if current_header:
+                                                                                                                                                                                                                                            extracted_data.append((current_header, "\n".join(current_content)))
 
-                                                                                                                                        if current_section:
-                                                                                                                                                sections.append(current_section)
+                                                                                                                                                                                                                                                return extracted_data
 
-                                                                                                                                                    return sections
+                                                                                                                                                                                                                                                # Example Usage
+                                                                                                                                                                                                                                                docx_path = "sample.docx"
+                                                                                                                                                                                                                                                headers_content = extract_text_from_docx(docx_path)
 
-                                                                                                                                                    # Function to extract text from PDFs
-                                                                                                                                                    def extract_text_from_pdf(pdf_path):
-                                                                                                                                                        doc = fitz.open(pdf_path)
-                                                                                                                                                            text = "\n".join([page.get_text("text") for page in doc])
-                                                                                                                                                                return text
-
-                                                                                                                                                                # Function to extract text from DOCX
-                                                                                                                                                                def extract_text_from_docx(docx_path):
-                                                                                                                                                                    doc = Document(docx_path)
-                                                                                                                                                                        text = "\n".join([para.text for para in doc.paragraphs])
-                                                                                                                                                                            return text
-
-                                                                                                                                                                            # Function to handle any document type
-                                                                                                                                                                            def extract_from_document(file_path, file_type):
-                                                                                                                                                                                if file_type.lower() == "pdf":
-                                                                                                                                                                                        text = extract_text_from_pdf(file_path)
-                                                                                                                                                                                            elif file_type.lower() == "docx":
-                                                                                                                                                                                                    text = extract_text_from_docx(file_path)
-                                                                                                                                                                                                        else:
-                                                                                                                                                                                                                print("Unsupported file type.")
-                                                                                                                                                                                                                        return []
-
-                                                                                                                                                                                                                            return extract_headers_with_model(text)
-
-                                                                                                                                                                                                                            # Example Usage
-                                                                                                                                                                                                                            pdf_results = extract_from_document("sample.pdf", "pdf")
-                                                                                                                                                                                                                            docx_results = extract_from_document("sample.docx", "docx")
-
-                                                                                                                                                                                                                            # Convert to DataFrame and save
-                                                                                                                                                                                                                            df_pdf = pd.DataFrame(pdf_results, columns=["Header", "Content"])
-                                                                                                                                                                                                                            df_docx = pd.DataFrame(docx_results, columns=["Header", "Content"])
-
-                                                                                                                                                                                                                            df_pdf.to_csv("pdf_extracted_data.csv", index=False)
-                                                                                                                                                                                                                            df_docx.to_csv("docx_extracted_data.csv", index=False)
-
-                                                                                                                                                                                                                            print("Extraction complete! Data saved as structured CSV.")
-                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                # Print results
+                                                                                                                                                                                                                                                for header, content in headers_content:
+                                                                                                                                                                                                                                                    print(f"HEADER: {header}\nCONTENT: {content}\n{'='*50}")
+                                                                                                                                                                                                                                                    
